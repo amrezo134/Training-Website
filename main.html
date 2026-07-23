@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>لوحة تدريب البوت — ChatApp</title>
+<meta name="robots" content="noindex, nofollow">
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --border:#262b36; --text:#eef1f6;
+    --muted:#8a90a2; --accent:#5b8cff; --danger:#ff5b6e; --ok:#33c46a;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; min-height:100vh; background:var(--bg); color:var(--text);
+    font-family:'Segoe UI', Tahoma, Arial, sans-serif;
+    display:flex; align-items:center; justify-content:center; padding:20px;
+  }
+  .wrap{width:100%; max-width:640px;}
+  .card{
+    background:var(--card); border:1px solid var(--border); border-radius:14px;
+    padding:24px; margin-bottom:16px;
+  }
+  h1{font-size:20px; margin:0 0 4px;}
+  p.sub{color:var(--muted); font-size:13px; margin:0 0 20px;}
+  label{display:block; font-size:13px; color:var(--muted); margin:14px 0 6px;}
+  input, textarea{
+    width:100%; background:#0f1218; border:1px solid var(--border); color:var(--text);
+    border-radius:8px; padding:10px 12px; font-size:14px; font-family:inherit;
+  }
+  textarea{resize:vertical; min-height:70px;}
+  button{
+    cursor:pointer; border:none; border-radius:8px; padding:10px 18px;
+    font-size:14px; font-weight:600; font-family:inherit;
+  }
+  .btn-primary{background:var(--accent); color:#fff; width:100%; margin-top:18px;}
+  .btn-danger{background:transparent; color:var(--danger); border:1px solid var(--danger); padding:6px 10px; font-size:12px;}
+  .btn-logout{background:transparent; color:var(--muted); border:1px solid var(--border); font-size:12px; padding:6px 12px;}
+  .err{color:var(--danger); font-size:13px; margin-top:10px; display:none;}
+  .row-between{display:flex; align-items:center; justify-content:space-between;}
+  .hidden{display:none !important;}
+  .item{
+    border:1px solid var(--border); border-radius:10px; padding:12px 14px;
+    margin-top:10px; display:flex; justify-content:space-between; gap:12px; align-items:flex-start;
+  }
+  .item .kw{color:var(--accent); font-size:12px; margin-bottom:4px;}
+  .item .rp{font-size:14px; line-height:1.5;}
+  .count{color:var(--muted); font-size:13px;}
+  .toast{
+    position:fixed; bottom:20px; left:50%; transform:translateX(-50%) translateY(20px);
+    background:var(--ok); color:#08240f; padding:10px 18px; border-radius:8px;
+    font-size:13px; font-weight:600; opacity:0; transition:.25s; pointer-events:none;
+  }
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(0);}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <!-- شاشة تسجيل الدخول -->
+  <div class="card" id="loginCard">
+    <h1>🔐 لوحة تدريب البوت</h1>
+    <p class="sub">سجّل دخول بحساب الأدمن عشان تضيف أو تعدّل بيانات التدريب</p>
+    <label>الإيميل</label>
+    <input type="email" id="loginEmail" placeholder="admin@example.com" autocomplete="username">
+    <label>الباسورد</label>
+    <input type="password" id="loginPass" placeholder="••••••••" autocomplete="current-password">
+    <button class="btn-primary" onclick="doLogin()">دخول</button>
+    <div class="err" id="loginErr"></div>
+  </div>
+
+  <!-- شاشة الإدارة (تظهر بعد تسجيل الدخول) -->
+  <div class="card hidden" id="panelCard">
+    <div class="row-between">
+      <h1 style="margin:0;">📚 قاعدة معرفة البوت</h1>
+      <button class="btn-logout" onclick="doLogout()">خروج</button>
+    </div>
+    <p class="sub">عدد الأسئلة: <span class="count" id="qaCount">0</span></p>
+
+    <label>الكلمات المفتاحية (افصل بفاصلة)</label>
+    <input type="text" id="patternsInput" placeholder="مثال: الأسعار, بكام, تكلفة">
+    <label>الرد</label>
+    <textarea id="replyInput" placeholder="اكتب رد البوت هنا..."></textarea>
+    <button class="btn-primary" onclick="addEntry()">➕ إضافة</button>
+
+    <div id="qaList"></div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- Firebase SDK -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import {
+  getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import {
+  getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, orderBy, query
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+/*
+  ================================================================
+  مهم: دول بيانات مشروع chatapp-dc50b بتاعك على Firebase.
+  الـ apiKey و projectId و storageBucket جايين من google-services.json
+  بتاع التطبيق. لازم بس تضيف "Web App" جديدة من Firebase Console
+  (Project settings -> Add app -> Web) عشان تاخد قيمة appId الصحيحة
+  وتحطها مكان "PUT_WEB_APP_ID_HERE" تحت.
+  ================================================================
+*/
+const firebaseConfig = {
+  apiKey: "AIzaSyDoH5-dn5dGhmDoGImdo0cXalqQ3q1pvnU",
+  authDomain: "chatapp-dc50b.firebaseapp.com",
+  databaseURL: "https://chatapp-dc50b-default-rtdb.firebaseio.com",
+  projectId: "chatapp-dc50b",
+  storageBucket: "chatapp-dc50b.firebasestorage.app",
+  messagingSenderId: "656947307239",
+  appId: "1:656947307239:web:d54488a5f417641e2a7842"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+window.doLogin = async function(){
+  const email = document.getElementById('loginEmail').value.trim();
+  const pass = document.getElementById('loginPass').value;
+  const errEl = document.getElementById('loginErr');
+  errEl.style.display = 'none';
+  try{
+    await signInWithEmailAndPassword(auth, email, pass);
+  }catch(e){
+    errEl.textContent = 'بيانات الدخول غلط أو حصل خطأ، جرّب تاني';
+    errEl.style.display = 'block';
+  }
+};
+
+window.doLogout = function(){
+  signOut(auth);
+};
+
+onAuthStateChanged(auth, (user) => {
+  document.getElementById('loginCard').classList.toggle('hidden', !!user);
+  document.getElementById('panelCard').classList.toggle('hidden', !user);
+  if(user) startListening();
+});
+
+let unsub = null;
+function startListening(){
+  if(unsub) return;
+  const q = query(collection(db, 'botKnowledge'), orderBy('createdAt', 'desc'));
+  unsub = onSnapshot(q, (snap) => {
+    const list = document.getElementById('qaList');
+    document.getElementById('qaCount').textContent = snap.size;
+    if(snap.empty){
+      list.innerHTML = '<p class="sub">لسه مفيش أسئلة مضافة</p>';
+      return;
+    }
+    list.innerHTML = '';
+    snap.forEach(d => {
+      const data = d.data();
+      const el = document.createElement('div');
+      el.className = 'item';
+      el.innerHTML = `
+        <div>
+          <div class="kw">${escapeHtml(data.patterns || '')}</div>
+          <div class="rp">${escapeHtml(data.reply || '')}</div>
+        </div>
+        <button class="btn-danger" data-id="${d.id}">حذف</button>
+      `;
+      el.querySelector('button').onclick = () => removeEntry(d.id);
+      list.appendChild(el);
+    });
+  });
+}
+
+window.addEntry = async function(){
+  const patterns = document.getElementById('patternsInput').value.trim();
+  const reply = document.getElementById('replyInput').value.trim();
+  if(!patterns || !reply){ showToast('⚠️ اكتب الكلمات المفتاحية والرد'); return; }
+  await addDoc(collection(db, 'botKnowledge'), {
+    patterns, reply, createdAt: Date.now()
+  });
+  document.getElementById('patternsInput').value = '';
+  document.getElementById('replyInput').value = '';
+  showToast('✅ اتضاف بنجاح');
+};
+
+async function removeEntry(id){
+  await deleteDoc(doc(db, 'botKnowledge', id));
+  showToast('🗑️ اتحذف');
+}
+
+function escapeHtml(str){
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+let toastTimer;
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
+}
+window.showToast = showToast;
+</script>
+</body>
+</html>
+
