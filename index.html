@@ -84,6 +84,9 @@
     <textarea id="replyInput" placeholder="اكتب رد البوت هنا..."></textarea>
     <button class="btn-primary" onclick="addEntry()">➕ إضافة</button>
 
+    <label style="margin-top:22px;">🔍 دوّر في الأسئلة المضافة</label>
+    <input type="text" id="searchInput" placeholder="اكتب كلمة من السؤال أو الرد..." oninput="renderList()">
+
     <div id="qaList"></div>
   </div>
 
@@ -148,32 +151,62 @@ onAuthStateChanged(auth, (user) => {
 });
 
 let unsub = null;
+let allEntries = []; // آخر نسخة من البيانات جاية من Firestore، بنفلترها محليًا وقت البحث
+
 function startListening(){
   if(unsub) return;
   const q = query(collection(db, 'botKnowledge'), orderBy('createdAt', 'desc'));
   unsub = onSnapshot(q, (snap) => {
-    const list = document.getElementById('qaList');
-    document.getElementById('qaCount').textContent = snap.size;
-    if(snap.empty){
-      list.innerHTML = '<p class="sub">لسه مفيش أسئلة مضافة</p>';
-      return;
-    }
-    list.innerHTML = '';
-    snap.forEach(d => {
-      const data = d.data();
-      const el = document.createElement('div');
-      el.className = 'item';
-      el.innerHTML = `
-        <div>
-          <div class="kw">${escapeHtml(data.patterns || '')}</div>
-          <div class="rp">${escapeHtml(data.reply || '')}</div>
-        </div>
-        <button class="btn-danger" data-id="${d.id}">حذف</button>
-      `;
-      el.querySelector('button').onclick = () => removeEntry(d.id);
-      list.appendChild(el);
-    });
+    allEntries = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    document.getElementById('qaCount').textContent = allEntries.length;
+    renderList();
   });
+}
+
+function renderList(){
+  const list = document.getElementById('qaList');
+  const term = normalizeSearch(document.getElementById('searchInput')?.value || '');
+
+  const filtered = term
+    ? allEntries.filter(e =>
+        normalizeSearch(e.patterns || '').includes(term) ||
+        normalizeSearch(e.reply || '').includes(term)
+      )
+    : allEntries;
+
+  if(allEntries.length === 0){
+    list.innerHTML = '<p class="sub">لسه مفيش أسئلة مضافة</p>';
+    return;
+  }
+  if(filtered.length === 0){
+    list.innerHTML = '<p class="sub">مفيش نتايج مطابقة للبحث</p>';
+    return;
+  }
+
+  list.innerHTML = '';
+  filtered.forEach(data => {
+    const el = document.createElement('div');
+    el.className = 'item';
+    el.innerHTML = `
+      <div>
+        <div class="kw">${escapeHtml(data.patterns || '')}</div>
+        <div class="rp">${escapeHtml(data.reply || '')}</div>
+      </div>
+      <button class="btn-danger" data-id="${data.id}">حذف</button>
+    `;
+    el.querySelector('button').onclick = () => removeEntry(data.id);
+    list.appendChild(el);
+  });
+}
+window.renderList = renderList;
+
+function normalizeSearch(text){
+  return text
+    .replace(/[إأآا]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .toLowerCase()
+    .trim();
 }
 
 window.addEntry = async function(){
@@ -211,4 +244,3 @@ window.showToast = showToast;
 </script>
 </body>
 </html>
-
