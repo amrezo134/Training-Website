@@ -82,7 +82,8 @@
     <input type="text" id="patternsInput" placeholder="مثال: الأسعار, بكام, تكلفة">
     <label>الرد</label>
     <textarea id="replyInput" placeholder="اكتب رد البوت هنا..."></textarea>
-    <button class="btn-primary" onclick="addEntry()">➕ إضافة</button>
+    <button class="btn-primary" id="saveBtn" onclick="addEntry()">➕ إضافة</button>
+    <button class="btn-logout hidden" id="cancelEditBtn" style="width:100%;margin-top:8px;" onclick="cancelEdit()">إلغاء التعديل</button>
 
     <label style="margin-top:22px;">🔍 دوّر في الأسئلة المضافة</label>
     <input type="text" id="searchInput" placeholder="اكتب كلمة من السؤال أو الرد..." oninput="renderList()">
@@ -101,31 +102,58 @@ import {
   getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import {
-  getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, orderBy, query
+  getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, orderBy, query, getCountFromServer
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 /*
   ================================================================
-  مهم: دول بيانات مشروع chatapp-dc50b بتاعك على Firebase.
-  الـ apiKey و projectId و storageBucket جايين من google-services.json
-  بتاع التطبيق. لازم بس تضيف "Web App" جديدة من Firebase Console
-  (Project settings -> Add app -> Web) عشان تاخد قيمة appId الصحيحة
-  وتحطها مكان "PUT_WEB_APP_ID_HERE" تحت.
+  قاعدة البيانات الأساسية لتدريب البوت — مشروع مخصص لوحده: train-38762
+  (Auth + Firestore الاتنين هنا، عشان الصلاحيات تشتغل صح — التوكن اللي
+  بيطلع من تسجيل الدخول هنا بس هو اللي هتفهمه Rules القاعدة دي).
   ================================================================
 */
 const firebaseConfig = {
-  apiKey: "AIzaSyDoH5-dn5dGhmDoGImdo0cXalqQ3q1pvnU",
-  authDomain: "chatapp-dc50b.firebaseapp.com",
-  databaseURL: "https://chatapp-dc50b-default-rtdb.firebaseio.com",
-  projectId: "chatapp-dc50b",
-  storageBucket: "chatapp-dc50b.firebasestorage.app",
-  messagingSenderId: "656947307239",
-  appId: "1:656947307239:web:d54488a5f417641e2a7842"
+  apiKey: "AIzaSyD121a9FE6wOJQL135I7Sgg5gVLuAmlx10",
+  authDomain: "train-38762.firebaseapp.com",
+  projectId: "train-38762",
+  storageBucket: "train-38762.firebasestorage.app",
+  messagingSenderId: "284700909620",
+  appId: "1:284700909620:web:61e0e92394a05341bdaa61"
 };
+
+/*
+  ================================================================
+  قاعدة البيانات الاحتياطية (Overflow) — لو train-38762 قربت تمتلئ يومًا ما.
+  مشروع Firebase تالت منفصل. لحد ما تتظبط، النظام هيفضل شغال بس على
+  train-38762 عادي (الاحتياطية مش هتتفعّل غير لما تحتاجها فعلًا).
+  ================================================================
+*/
+const firebaseConfig2 = {
+  apiKey: "PUT_DB2_API_KEY_HERE",
+  authDomain: "PUT_DB2_PROJECT_ID_HERE.firebaseapp.com",
+  projectId: "PUT_DB2_PROJECT_ID_HERE",
+  storageBucket: "PUT_DB2_PROJECT_ID_HERE.firebasestorage.app",
+  messagingSenderId: "PUT_DB2_SENDER_ID_HERE",
+  appId: "PUT_DB2_APP_ID_HERE"
+};
+
+// أقصى عدد أسئلة في القاعدة الأساسية قبل ما نبدأ نكتب في الاحتياطية
+// (500 ألف سؤال ≈ ربع الـ 1 جيجا المجانية تقريبًا — هامش أمان كبير عمدًا)
+const ENTRY_LIMIT_PER_DB = 500000;
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+let db2 = null;
+try {
+  if (firebaseConfig2.apiKey !== "PUT_DB2_API_KEY_HERE") {
+    const app2 = initializeApp(firebaseConfig2, "overflow");
+    db2 = getFirestore(app2);
+  }
+} catch (e) {
+  console.warn("القاعدة الاحتياطية مش متظبطة لسه:", e);
+}
 
 window.doLogin = async function(){
   const email = document.getElementById('loginEmail').value.trim();
@@ -151,16 +179,32 @@ onAuthStateChanged(auth, (user) => {
 });
 
 let unsub = null;
-let allEntries = []; // آخر نسخة من البيانات جاية من Firestore، بنفلترها محليًا وقت البحث
+let unsub2 = null;
+let entriesDb1 = [];
+let entriesDb2 = [];
+let allEntries = []; // دمج القاعدتين مع بعض، بنفلتره محليًا وقت البحث
+
+function mergeAndRender(){
+  allEntries = [...entriesDb1, ...entriesDb2];
+  document.getElementById('qaCount').textContent = allEntries.length;
+  renderList();
+}
 
 function startListening(){
-  if(unsub) return;
-  const q = query(collection(db, 'botKnowledge'), orderBy('createdAt', 'desc'));
-  unsub = onSnapshot(q, (snap) => {
-    allEntries = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    document.getElementById('qaCount').textContent = allEntries.length;
-    renderList();
-  });
+  if(!unsub){
+    const q = query(collection(db, 'botKnowledge'), orderBy('createdAt', 'desc'));
+    unsub = onSnapshot(q, (snap) => {
+      entriesDb1 = snap.docs.map(d => ({ id: d.id, _source: 'db1', ...d.data() }));
+      mergeAndRender();
+    });
+  }
+  if(db2 && !unsub2){
+    const q2 = query(collection(db2, 'botKnowledge'), orderBy('createdAt', 'desc'));
+    unsub2 = onSnapshot(q2, (snap) => {
+      entriesDb2 = snap.docs.map(d => ({ id: d.id, _source: 'db2', ...d.data() }));
+      mergeAndRender();
+    });
+  }
 }
 
 function renderList(){
@@ -192,13 +236,41 @@ function renderList(){
         <div class="kw">${escapeHtml(data.patterns || '')}</div>
         <div class="rp">${escapeHtml(data.reply || '')}</div>
       </div>
-      <button class="btn-danger" data-id="${data.id}">حذف</button>
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        <button class="btn-logout" style="font-size:12px;">تعديل</button>
+        <button class="btn-danger">حذف</button>
+      </div>
     `;
-    el.querySelector('button').onclick = () => removeEntry(data.id);
+    const btns = el.querySelectorAll('button');
+    btns[0].onclick = () => startEdit(data);
+    btns[1].onclick = () => removeEntry(data.id, data._source);
     list.appendChild(el);
   });
 }
 window.renderList = renderList;
+
+let editingId = null;
+let editingSource = null;
+
+function startEdit(data){
+  editingId = data.id;
+  editingSource = data._source;
+  document.getElementById('patternsInput').value = data.patterns || '';
+  document.getElementById('replyInput').value = data.reply || '';
+  document.getElementById('saveBtn').textContent = '💾 حفظ التعديل';
+  document.getElementById('cancelEditBtn').classList.remove('hidden');
+  document.getElementById('patternsInput').scrollIntoView({ behavior: 'smooth' });
+}
+window.startEdit = startEdit;
+
+window.cancelEdit = function(){
+  editingId = null;
+  editingSource = null;
+  document.getElementById('patternsInput').value = '';
+  document.getElementById('replyInput').value = '';
+  document.getElementById('saveBtn').textContent = '➕ إضافة';
+  document.getElementById('cancelEditBtn').classList.add('hidden');
+};
 
 function normalizeSearch(text){
   return text
@@ -213,16 +285,46 @@ window.addEntry = async function(){
   const patterns = document.getElementById('patternsInput').value.trim();
   const reply = document.getElementById('replyInput').value.trim();
   if(!patterns || !reply){ showToast('⚠️ اكتب الكلمات المفتاحية والرد'); return; }
-  await addDoc(collection(db, 'botKnowledge'), {
+
+  // وضع التعديل: بنحدّث الـ document الموجود بدل ما نضيف واحد جديد
+  if (editingId) {
+    const targetDb = editingSource === 'db2' ? db2 : db;
+    if (!targetDb) { showToast('⚠️ حصل خطأ، جرّب تاني'); return; }
+    await updateDoc(doc(targetDb, 'botKnowledge', editingId), { patterns, reply });
+    showToast('✅ اتعدّل بنجاح');
+    cancelEdit();
+    return;
+  }
+
+  // وضع الإضافة العادي
+  let targetDb = db;
+  let targetLabel = 'الأساسية';
+  try {
+    const countSnap = await getCountFromServer(collection(db, 'botKnowledge'));
+    if (countSnap.data().count >= ENTRY_LIMIT_PER_DB) {
+      if (!db2) {
+        showToast('⚠️ القاعدة الأساسية قربت تمتلئ ولسه معملتش القاعدة الاحتياطية');
+        return;
+      }
+      targetDb = db2;
+      targetLabel = 'الاحتياطية';
+    }
+  } catch (e) {
+    console.warn('تعذر عدّ الأسئلة، هنكتب في القاعدة الأساسية بشكل افتراضي', e);
+  }
+
+  await addDoc(collection(targetDb, 'botKnowledge'), {
     patterns, reply, createdAt: Date.now()
   });
   document.getElementById('patternsInput').value = '';
   document.getElementById('replyInput').value = '';
-  showToast('✅ اتضاف بنجاح');
+  showToast(targetLabel === 'الأساسية' ? '✅ اتضاف بنجاح' : '✅ اتضاف في القاعدة الاحتياطية');
 };
 
-async function removeEntry(id){
-  await deleteDoc(doc(db, 'botKnowledge', id));
+async function removeEntry(id, source){
+  const targetDb = source === 'db2' ? db2 : db;
+  if(!targetDb) return;
+  await deleteDoc(doc(targetDb, 'botKnowledge', id));
   showToast('🗑️ اتحذف');
 }
 
